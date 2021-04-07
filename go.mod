@@ -1,4 +1,4 @@
-module github.com/Abramovic/logrus_influxdb
+module github.com/abramovic/logrus_influxdb
 
 go 1.14
 
