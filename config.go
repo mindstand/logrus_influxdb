@@ -1,21 +1,20 @@
 package logrus_influxdb
 
 import (
-	"os"
 	"time"
 )
 
 // Config handles InfluxDB configuration, Logrus tags and batching inserts to InfluxDB
 type Config struct {
 	// InfluxDB Configurations
-	Host      string        `json:"influxdb_host"`
-	Port      int           `json:"influxdb_port"`
-	Timeout   time.Duration `json:"influxdb_timeout"`
-	Database  string        `json:"influxdb_database"`
-	Username  string        `json:"influxdb_username"`
-	Password  string        `json:"influxdb_password"`
-	UseHTTPS  bool          `json:"influxdb_https"`
-	Precision string        `json:"influxdb_precision"`
+	Host         string        `json:"influxdb_host"`
+	Port         int           `json:"influxdb_port"`
+	Timeout      time.Duration `json:"influxdb_timeout"`
+	Bucket       string        `json:"influxdb_bucket"`
+	Organization string        `json:"influx_organization"`
+	Token        string        `json:"influx_token"`
+	UseHTTPS     bool          `json:"influxdb_https"`
+	Precision    time.Duration `json:"influxdb_precision"`
 
 	// Enable syslog format for chronograf logviewer usage
 	Syslog       bool   `json:"syslog_enabled"`
@@ -34,8 +33,8 @@ type Config struct {
 	Measurement string `json:"measurement"`
 
 	// Batching
-	BatchInterval time.Duration `json:"batch_interval"` // Defaults to 5s.
-	BatchCount    int           `json:"batch_count"`    // Defaults to 200.
+	BatchIntervalMs uint `json:"batch_interval"` // Defaults to 5s.
+	BatchCount      uint `json:"batch_count"`    // Defaults to 200.
 }
 
 // Set the default configurations
@@ -49,17 +48,17 @@ func (c *Config) defaults() {
 	if c.Timeout == 0 {
 		c.Timeout = 100 * time.Millisecond
 	}
-	if c.Database == "" {
-		c.Database = defaultDatabase
+	if c.Bucket == "" {
+		c.Bucket = defaultBucket
 	}
-	if c.Username == "" {
-		c.Username = os.Getenv("INFLUX_USER")
-	}
-	if c.Password == "" {
-		c.Password = os.Getenv("INFLUX_PWD")
-	}
-	if c.Precision == "" {
-		c.Precision = "ns"
+	//if c.Username == "" {
+	//	c.Username = os.Getenv("INFLUX_USER")
+	//}
+	//if c.Password == "" {
+	//	c.Password = os.Getenv("INFLUX_PWD")
+	//}
+	if c.Precision == time.Duration(0) {
+		c.Precision = defaultPrecision
 	}
 	if c.Tags == nil {
 		c.Tags = []string{}
@@ -67,10 +66,10 @@ func (c *Config) defaults() {
 	if c.Measurement == "" {
 		c.Measurement = defaultMeasurement
 	}
-	if c.BatchInterval < 0 {
-		c.BatchInterval = defaultBatchInterval
-	}
-	if c.BatchCount < 0 {
+	if c.BatchCount <= 0 {
 		c.BatchCount = defaultBatchCount
+	}
+	if c.BatchIntervalMs <= 0 {
+		c.BatchIntervalMs = defaultBatchIntervalMs
 	}
 }

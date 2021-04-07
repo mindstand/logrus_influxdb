@@ -4,7 +4,7 @@ Feel free to create an issue or send me a pull request if you have any questions
 
 - [GoDoc](https://godoc.org/github.com/Abramovic/logrus_influxdb)
 - [Examples](https://github.com/Abramovic/logrus_influxdb/tree/master/examples)
-- [Logrus](https://github.com/Sirupsen/logrus)
+- [Logrus](https://github.com/sirupsen/logrus)
 - [InfluxDB](https://influxdb.com)
 
 #### [Contributors](https://github.com/Abramovic/logrus_influxdb/graphs/contributors)
@@ -19,7 +19,7 @@ Thank you for creating issues and pull requests!
 ```go
 import (
   "time"
-  "github.com/Sirupsen/logrus"
+  "github.com/sirupsen/logrus"
   "github.com/Abramovic/logrus_influxdb"
 )
 func main() {
@@ -57,7 +57,7 @@ If you wish to initialize a InfluxDB Hook with an already initialized InfluxDB c
 ```go
 import (
 	"github.com/Abramovic/logrus_influxdb"
-	"github.com/Sirupsen/logrus"
+	"github.com/sirupsen/logrus"
 	client "github.com/influxdata/influxdb/client/v2"
 )
 
@@ -88,7 +88,7 @@ If you wish to push your logs in syslog format so you can view all logs in the c
 ```go
 import (
   "time"
-  "github.com/Sirupsen/logrus"
+  "github.com/sirupsen/logrus"
   "github.com/Abramovic/logrus_influxdb"
 )
 

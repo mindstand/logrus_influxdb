@@ -1,42 +1,44 @@
 package logrus_influxdb
 
 import (
+	"context"
 	"fmt"
+	"github.com/influxdata/influxdb-client-go/v2/api"
 	"os"
-	"sync"
 	"time"
 
-	influxdb "github.com/influxdata/influxdb1-client/v2"
+	influxdb "github.com/influxdata/influxdb-client-go/v2"
 	"github.com/sirupsen/logrus"
 )
 
 var (
-	defaultHost          = "localhost"
-	defaultPort          = 8086
-	defaultDatabase      = "logrus"
-	defaultBatchInterval = 5 * time.Second
-	defaultMeasurement   = "logrus"
-	defaultBatchCount    = 200
-	defaultPrecision     = "ns"
-	defaultSyslog        = false
+	defaultHost            = "localhost"
+	defaultPort            = 8086
+	defaultBucket          = "logrus"
+	defaultBatchIntervalMs = uint(5000)
+	defaultMeasurement     = "logrus"
+	defaultBatchCount      = uint(200)
+	defaultPrecision       = time.Nanosecond
+	defaultSyslog          = false
 )
 
 // InfluxDBHook delivers logs to an InfluxDB cluster.
 type InfluxDBHook struct {
-	sync.Mutex                       // TODO: we should clean up all of these locks
-	client                           influxdb.Client
-	precision, database, measurement string
-	tagList                          []string
-	batchP                           influxdb.BatchPoints
-	lastBatchUpdate                  time.Time
-	batchInterval                    time.Duration
-	batchCount                       int
-	syslog                           bool
-	facility                         string
-	facilityCode                     int
-	appName                          string
-	version                          string
-	minLevel                         string
+	client                   influxdb.Client
+	writeAPI                 api.WriteAPI
+	precision                time.Duration
+	org, bucket, measurement string
+	tagList                  []string
+	lastBatchUpdate          time.Time
+	batchIntervalMs          uint
+	batchCount               uint
+	syslog                   bool
+	facility                 string
+	facilityCode             int
+	appName                  string
+	version                  string
+	minLevel                 string
+	ErrorChannel             <-chan error
 }
 
 // NewInfluxDB returns a new InfluxDBHook.
@@ -48,45 +50,45 @@ func NewInfluxDB(config *Config, clients ...influxdb.Client) (hook *InfluxDBHook
 
 	var client influxdb.Client
 	if len(clients) == 0 {
-		client, err = hook.newInfluxDBClient(config)
-		if err != nil {
-			return nil, fmt.Errorf("NewInfluxDB: Error creating InfluxDB Client, %v", err)
-		}
+		client = newInfluxDBClient(config)
 	} else if len(clients) == 1 {
 		client = clients[0]
 	} else {
 		return nil, fmt.Errorf("NewInfluxDB: Error creating InfluxDB Client, %d is too many influxdb clients", len(clients))
 	}
 
-	// Make sure that we can connect to InfluxDB
-	_, _, err = client.Ping(5 * time.Second) // if this takes more than 5 seconds then influxdb is probably down
-	if err != nil {
-		return nil, fmt.Errorf("NewInfluxDB: Error connecting to InfluxDB, %v", err)
+	ready, err := client.Ready(context.Background())
+	if !ready || err != nil {
+		return nil, fmt.Errorf("client is not available. ready=%v,err=%v", ready, err)
 	}
+
+	writeAPI := client.WriteAPI(config.Organization, config.Bucket)
 
 	hook = &InfluxDBHook{
-		client:        client,
-		database:      config.Database,
-		measurement:   config.Measurement,
-		tagList:       config.Tags,
-		batchInterval: config.BatchInterval,
-		batchCount:    config.BatchCount,
-		precision:     config.Precision,
-		syslog:        config.Syslog,
-		facility:      config.Facility,
-		facilityCode:  config.FacilityCode,
-		appName:       config.AppName,
-		version:       config.Version,
-		minLevel:      config.MinLevel,
+		client:          client,
+		bucket:          config.Bucket,
+		org:             config.Organization,
+		measurement:     config.Measurement,
+		tagList:         config.Tags,
+		batchIntervalMs: config.BatchIntervalMs,
+		batchCount:      config.BatchCount,
+		precision:       config.Precision,
+		syslog:          config.Syslog,
+		facility:        config.Facility,
+		facilityCode:    config.FacilityCode,
+		appName:         config.AppName,
+		version:         config.Version,
+		minLevel:        config.MinLevel,
+		writeAPI:        writeAPI,
+		ErrorChannel:    writeAPI.Errors(),
 	}
-
-	err = hook.autocreateDatabase()
-	if err != nil {
-		return nil, err
-	}
-	go hook.handleBatch()
 
 	return hook, nil
+}
+
+func (hook *InfluxDBHook) Close() {
+	hook.writeAPI.Flush()
+	hook.client.Close()
 }
 
 func parseSeverity(level string) (string, int) {
@@ -204,83 +206,8 @@ func (hook *InfluxDBHook) Fire(entry *logrus.Entry) (err error) {
 			}
 		}
 
-		pt, err := influxdb.NewPoint(measurement, tags, data, entry.Time)
-		if err != nil {
-			return fmt.Errorf("Fire: %v", err)
-		}
-
-		return hook.addPoint(pt)
+		hook.writeAPI.WritePoint(influxdb.NewPoint(measurement, tags, data, entry.Time))
 	}
 
 	return nil
 }
-
-func (hook *InfluxDBHook) addPoint(pt *influxdb.Point) (err error) {
-	hook.Lock()
-	defer hook.Unlock()
-	if hook.batchP == nil {
-		err = hook.newBatchPoints()
-		if err != nil {
-			return fmt.Errorf("Error creating new batch: %v", err)
-		}
-	}
-	hook.batchP.AddPoint(pt)
-
-	// if the number of batch points are less than the batch size then we don't need to write them yet
-	if len(hook.batchP.Points()) < hook.batchCount {
-		return nil
-	}
-	return hook.writePoints()
-}
-
-// writePoints writes the batched log entries to InfluxDB.
-func (hook *InfluxDBHook) writePoints() (err error) {
-	if hook.batchP == nil {
-		return nil
-	}
-	err = hook.client.Write(hook.batchP)
-	// Note: the InfluxDB client doesn't give us any good way to determine the reason for
-	// a failure (bad syntax, invalid type, failed connection, etc.), so there is no
-	// point in retrying a write.  If the write fails, then we're going to clear out the
-	// batch, just as we would for a successful write.
-
-	hook.lastBatchUpdate = time.Now().UTC()
-	hook.batchP = nil
-
-	// Return the write error (if any).
-	return err
-}
-
-// we will periodically flush your points to influxdb.
-func (hook *InfluxDBHook) handleBatch() {
-	if hook.batchInterval == 0 || hook.batchCount == 0 {
-		// we don't need to process this if the interval is 0
-		return
-	}
-	for {
-		time.Sleep(hook.batchInterval)
-		hook.Lock()
-		hook.writePoints()
-		hook.Unlock()
-	}
-}
-
-/* BEGIN BACKWARDS COMPATIBILITY */
-
-// NewInfluxDBHook /* DO NOT USE */ creates a hook to be added to an instance of logger and initializes the InfluxDB client
-func NewInfluxDBHook(host, database string, tags []string, batching ...bool) (hook *InfluxDBHook, err error) {
-	if len(batching) == 1 && batching[0] {
-		return NewInfluxDB(&Config{Host: host, Database: database, Tags: tags}, nil)
-	}
-	return NewInfluxDB(&Config{Host: host, Database: database, Tags: tags, BatchCount: 0}, nil)
-}
-
-// NewWithClientInfluxDBHook /* DO NOT USE */ creates a hook and uses the provided influxdb client
-func NewWithClientInfluxDBHook(host, database string, tags []string, client influxdb.Client, batching ...bool) (hook *InfluxDBHook, err error) {
-	if len(batching) == 1 && batching[0] {
-		return NewInfluxDB(&Config{Host: host, Database: database, Tags: tags}, client)
-	}
-	return NewInfluxDB(&Config{Host: host, Database: database, Tags: tags, BatchCount: 0}, client)
-}
-
-/* END BACKWARDS COMPATIBILITY */
